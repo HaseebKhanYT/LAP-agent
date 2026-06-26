@@ -139,7 +139,8 @@ function RecipeView({
     setRecipe(null);
     setError(undefined);
 
-    api.getRecipe(platform, capability.id).then((res) => {
+    // Recipes are keyed by capability name in the knowledge store.
+    api.getRecipe(platform, capability.name).then((res) => {
       if (cancelled) return;
       setLoading(false);
       if (res.ok) setRecipe(res.data);
@@ -149,7 +150,7 @@ function RecipeView({
     return () => {
       cancelled = true;
     };
-  }, [platform, capability.id]);
+  }, [platform, capability.name]);
 
   return (
     <div className="rounded-lg border border-border bg-panel-2 p-4">

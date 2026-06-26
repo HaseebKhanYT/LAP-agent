@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { runEventsUrl } from "@/lib/api";
 import { cn, formatTime } from "@/lib/format";
 import type { RunEvent } from "@/lib/types";
@@ -19,6 +20,7 @@ export function EventLog({ runId }: { runId: string }) {
   const [conn, setConn] = useState<ConnState>("connecting");
   const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -45,6 +47,14 @@ export function EventLog({ runId }: { runId: string }) {
             ? next.slice(next.length - MAX_EVENTS)
             : next;
         });
+        // On a terminal event, close the stream so the browser doesn't
+        // auto-reconnect and re-replay buffered history, and refresh the
+        // server-rendered status/coverage to reflect the final state.
+        if (parsed.type === "done" || parsed.type === "error") {
+          source?.close();
+          setConn("closed");
+          router.refresh();
+        }
       } catch {
         // Ignore malformed frames rather than crashing the stream.
       }
@@ -61,7 +71,7 @@ export function EventLog({ runId }: { runId: string }) {
       source?.close();
       setConn("closed");
     };
-  }, [runId]);
+  }, [runId, router]);
 
   // Auto-scroll to bottom on new events when enabled.
   useEffect(() => {

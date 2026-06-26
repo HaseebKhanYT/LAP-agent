@@ -42,3 +42,7 @@ Thumbs.db
 *.log
 .cache/
 data/
+
+# --- Test / smoke artifacts ---
+.playwright-mcp/
+/smoke-*.png

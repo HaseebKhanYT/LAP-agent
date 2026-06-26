@@ -8,9 +8,10 @@ required when a learning run actually performs LLM inference.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -26,7 +27,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    # NoDecode: skip pydantic-settings' JSON decoding so the env value reaches the
+    # comma-splitting validator below (CORS_ORIGINS=a,b instead of a JSON array).
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:3000"]
+    )
 
     # ── Nebius Token Factory (OpenAI-compatible LLM) ─────────────────────────
     # Optional at boot; required for learning runs.
