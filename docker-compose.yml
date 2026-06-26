@@ -1,0 +1,40 @@
+# LAP — full stack: Redis + FastAPI backend + Next.js console.
+#   docker compose up --build
+# Variables (e.g. NEBIUS_API_KEY) are read from a root `.env` (see .env.example).
+# The stack comes up with no secrets; only a real learning run needs NEBIUS_API_KEY.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:3000
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
+      NEBIUS_MODEL: ${NEBIUS_MODEL:-meta-llama/Llama-3.3-70B-Instruct}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked in at build time; the browser calls the backend on the host.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
