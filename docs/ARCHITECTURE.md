@@ -1,10 +1,20 @@
 # Architecture — LAP (Learn-A-Platform)
 
 This document records the technical architecture chosen to implement the
-[PRD](./PRD-learn-a-platform.md). It maps the PRD's multi-agent design onto a
-concrete, scalable stack: **LangGraph** (agent orchestration), **FastAPI**
-(API + serving), **Nebius Token Factory** (LLM inference), **Redis** (cache,
-durable graph state, run event bus), and **Next.js** (operator console).
+[PRD](./PRD-learn-a-platform.md). LAP ships as a **single specialist agent
+offered for hire on the [GMI Cloud AgentBox](https://docs.gmicloud.ai/agentbox-marketplace/overview)
+marketplace**: one Docker container, one listing, that a buyer hires to learn a
+web platform and that then serves verified recipes. Internally it is built from
+a pipeline of roles (decompose → explore → verify → publish), but the
+marketplace and every caller see one hireable HTTP service — never the roles
+inside.
+
+The stack: **LangGraph** (in-container role orchestration + durable resume),
+**FastAPI** (the container's HTTP surface — both the async *learn* job and the
+*serve* reads), **GMI MaaS** (OpenAI-compatible inference, 200+ models, key
+injected by AgentBox at runtime), **Redis** (cache, durable graph state, run
+event bus) plus an **object store** for provenance blobs, and **Next.js** (an
+optional operator/demo console — AgentBox itself provides monitoring & billing).
 
 ---
 
@@ -30,10 +40,16 @@ durable graph state, run event bus), and **Next.js** (operator console).
 └───────┬─────────┘    └────────────────────┘      └──────────────────────────┘
         │ LLM calls (OpenAI-compatible)
 ┌───────▼──────────────────┐        ┌──────────────────────────────────────┐
-│  Nebius Token Factory     │        │  Browser driver (Playwright/CDP)     │
-│  open-model inference      │        │  perception + action on the platform │
+│  GMI MaaS (injected env)  │        │  Browser driver (Playwright/CDP)     │
+│  OpenAI-compatible · 200+ │        │  bundled in the container image      │
+│  models · tiered          │        │  perception + action on the platform │
 └───────────────────────────┘        └──────────────────────────────────────┘
 ```
+
+> The FastAPI service + LangGraph + Redis above run as a **single AgentBox
+> container** (external HTTPS/443 → container port 8080); the browser is bundled
+> into that image, and the Next.js console is optional. See §7 for the full
+> container contract.
 
 ---
 
@@ -43,9 +59,9 @@ durable graph state, run event bus), and **Next.js** (operator console).
 |---|---|---|
 | **Agent orchestration** | LangGraph `StateGraph` | The PRD needs a long-running, stateful, multi-agent loop with **durable execution** and **human-in-the-loop**. LangGraph gives first-class `interrupt()`/`Command(resume=...)` for the HITL gate and pluggable checkpointers for durability and resume. |
 | **API / serving** | FastAPI | Async, typed (Pydantic) request/response, native SSE/streaming, OpenAPI out of the box — ideal for both the operator console and the knowledge-serving API. |
-| **LLM** | Nebius Token Factory | OpenAI-compatible inference over open models. Consumed via `langchain-openai` `ChatOpenAI` pointed at `https://api.tokenfactory.nebius.com/v1/` (or the `langchain-nebius` package), so swapping models is a config change. |
+| **LLM** | GMI MaaS | OpenAI-compatible inference over 200+ models. `GMI_MAAS_BASE_URL` / `GMI_MAAS_API_KEY` / `GMI_MODELS` are **injected by AgentBox at runtime**; consumed via `langchain-openai` `ChatOpenAI` pointed at that base URL, so model choice — including cheap-for-scout / strong-for-verify tiering — is a config change. |
 | **Cache / state** | Redis | One backend serves three needs: LangGraph **checkpointer** (durable graph state, resume), **response/query cache** (LLM + knowledge reads), and a **pub/sub event bus** + HITL queue powering the live run stream. |
-| **Frontend** | Next.js (App Router) | Server components for fast reads, client components for the live SSE event stream and HITL controls. |
+| **Frontend** | Next.js (App Router) | **Optional** operator/demo console — AgentBox itself provides monitoring, usage and billing. Server components for fast reads, client components for the live SSE event stream and HITL controls. |
 
 ---
 
@@ -54,6 +70,16 @@ durable graph state, run event bus), and **Next.js** (operator console).
 Nodes implement the eight PRD roles. The graph is built in
 `backend/app/agents/graph.py`; shared state lives in `agents/state.py`; each
 node is a module under `agents/nodes/`.
+
+**One agent, many roles.** LAP is *listed* as a single hireable agent — the
+marketplace and every caller see one HTTP service, never the roles inside. For
+v1 the discovery roles (conductor → scout → prober → cartographer → synthesizer
+→ documenter) collapse into a single reasoning loop sharing one context, backed
+by deterministic tooling (signature hashing, DOM diffing, dedup, replay
+assertions — these are *not* LLM calls). The **verifier stays a separate,
+fresh-context, clean-session replay**: that seam is the grounding guarantee
+(PRD §9) and is the one boundary never collapsed. Parallel scouts/probers are a
+P3 scale-out lever, not a v1 requirement, and remain invisible to callers.
 
 ```
 START
@@ -112,7 +138,7 @@ START
 ```
 app/
   core/        config, logging, lifespan            (cross-cutting; no business logic)
-  llm/         Nebius client factory                (only place that knows the LLM)
+  llm/         GMI MaaS client factory              (only place that knows the LLM)
   cache/       Redis client, cache + pub/sub helpers (only place that knows Redis wire)
   agents/      LangGraph state + graph + node stubs  (orchestration; depends on llm/cache)
   repositories/ Knowledge Store abstraction + impl   (persistence seam; swappable backend)
@@ -138,25 +164,52 @@ graph or relational DB without touching services or agents.
   so any API replica can serve a client subscribed to any run.
 - **Pluggable persistence.** The repository interface allows moving from Redis to a
   dedicated graph/relational store as platform maps grow.
-- **Model flexibility.** Nebius model choice is a config value; heavier reasoning
+- **Model flexibility.** GMI MaaS model choice is a config value; heavier reasoning
   models can be used for synthesis/verification and cheaper ones for scouting.
 - **Next step for scale:** move graph execution to a dedicated worker pool (e.g.
   Celery/Arq/Ray) consuming a run queue; the API only enqueues and streams.
 
 ---
 
-## 7. Boot & the API-key boundary
+## 7. Deployment: the AgentBox container contract
 
-The scaffold is designed to **boot and serve `/health` with no secrets**:
+LAP is delivered as **one Docker image** listed on GMI Cloud AgentBox and hired
+per-second of compute. The image must satisfy AgentBox's contract:
 
-- `NEBIUS_API_KEY` is **optional at startup**; the LLM client is created lazily and
-  raises a clear error only when an actual learning run needs inference.
-- Redis connection is attempted at startup but **degrades gracefully** (logged
-  warning) if unavailable, so the API and frontend still come up.
-- `GET /health` reports `{redis: bool, llm_configured: bool}` so the operator can
-  see exactly what's missing.
+- **HTTP service on port 8080.** AgentBox maps external HTTPS/443 → container
+  `8080`. The FastAPI app *is* the agent; AgentBox prescribes no request schema,
+  so the routes below are ours to design.
+- **Two surfaces, one app.**
+  - *Learn* (async job): `POST /api/v1/runs` accepts a target (URL + sandbox
+    credentials + budget) and returns **HTTP 202 + a `job_id`**; the crawl runs
+    in the background; callers poll `GET /runs/{id}` (status/coverage) and
+    `GET /runs/{id}/result` (UI map + recipes). This is AgentBox's prescribed
+    pattern for long-running work — a held-open connection is 504'd by the
+    gateway.
+  - *Serve* (fast reads): `GET /platforms`, `/recipe`, `/search`, `/ui_map`,
+    `explain_element`, `report_failure` — the verified-knowledge queries from
+    PRD §11, as plain HTTP routes in the same container.
+- **Inference via injected MaaS env.** `GMI_MAAS_BASE_URL`, `GMI_MAAS_API_KEY`,
+  and `GMI_MODELS` are injected by AgentBox at runtime (never hardcoded). The LLM
+  client reads them lazily, so the container still **boots and serves `/health`
+  with no secrets present**.
+- **Stateless container, external durable state.** In-container memory and the
+  30 GiB disk are lost on restart, so durable state goes to **Redis** (run
+  checkpoints via `AsyncRedisSaver`, job records, hot-read cache) and
+  **provenance blobs** (screenshots, DOM snapshots) go to an **S3-compatible
+  object store** supplied as a Secret — only refs live in Redis. This is what
+  lets a long crawl survive a container restart and resume.
+- **Browser in the image.** Playwright + Chromium are bundled into the image; the
+  compute tier is sized for the browser, not the LLM call.
+- **HITL without an operator console.** With no console beside the agent on the
+  marketplace, the default policy is **sandbox-only + auto-deny destructive**, so
+  a hire runs end-to-end unattended. Buyers who want the gate opt in: the job
+  reports `status: needs_approval` and resumes on
+  `POST /runs/{id}/approvals/{aid}`.
+- **Health.** `GET /health` reports `{redis: bool, llm_configured: bool}` so the
+  operator/marketplace can see exactly what is wired.
 
-Result: `docker compose up` (or running each service locally) brings the whole
-system online; the **only** thing required before a real learning run is the
-Nebius API key (and sandbox platform credentials). That is the intended stopping
-point for this scaffold.
+Result: `docker build` → push → register via the AgentBox deploy wizard (Basics →
+Infrastructure → Networking → Env → Review) brings the listing online. Beyond the
+image, a real hire needs only the injected MaaS key (from AgentBox) and the
+buyer's sandbox platform credentials.

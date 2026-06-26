@@ -23,6 +23,18 @@ set of real workflows and paths itself, and must **never** publish a path, butto
 purpose, or workflow that it has not directly observed and independently replayed.
 Hallucinated navigation is the primary failure mode this system is designed to eliminate.
 
+**Delivery & packaging.** LAP is shipped as a **single specialist agent offered for
+hire on the [GMI Cloud AgentBox](https://docs.gmicloud.ai/agentbox-marketplace/overview)
+marketplace** — one Docker container, one listing, billed per-second of compute. A
+buyer hires it with a platform URL + sandbox credentials; it runs the learning job
+and then serves verified recipes from the same container. Although the system is
+*architected* as a pipeline of specialized roles (§6), it is *delivered and billed*
+as one agent: the marketplace and every caller see a single HTTP service. The role
+decomposition is an internal implementation detail and a scaling lever — for v1 the
+discovery roles collapse into a single reasoning loop, with only the **Verifier**
+kept as an independent, fresh-context stage (the grounding seam). See
+[ARCHITECTURE.md](./ARCHITECTURE.md) §7 for the container contract.
+
 ---
 
 ## 2. Problem & Motivation
@@ -76,12 +88,17 @@ of guesswork.
 | **Downstream agent developer** | Wants their agent to operate a platform reliably; queries LAP for verified recipes instead of hard-coding selectors. |
 | **Autonomous agent (runtime)** | Mid-task, asks LAP `get_recipe(platform, "create invoice")` and executes the returned grounded steps. |
 | **QA / ops engineer** | Uses LAP's UI map + capability catalog as living documentation of a platform's surface area. |
-| **LAP operator** | Kicks off a learning run, approves HITL gates, reviews coverage and verification reports. |
+| **AgentBox buyer** | Discovers the listed LAP agent on the marketplace and **hires** it to learn a platform their own agents must operate; calls the async learn job, then queries verified recipes — paying per-second of compute. |
+| **LAP operator** | Kicks off a learning run, approves HITL gates (when enabled), reviews coverage and verification reports. |
 
 **Primary use case (end-to-end):**
-1. Operator runs `lap learn --url app.example.com --creds sandbox.json`.
-2. LAP explores, maps, probes, synthesizes, and verifies the platform.
-3. LAP publishes the verified knowledge to its MCP server.
+1. A buyer hires the LAP listing on AgentBox: `POST /runs {url: app.example.com,
+   creds: sandbox, budget}` → `202 {job_id}` (a CLI `lap learn …` is an equivalent
+   local form).
+2. LAP explores, maps, probes, synthesizes, and verifies the platform; the buyer
+   polls `GET /runs/{job_id}` for live progress.
+3. LAP publishes the verified knowledge into the same container's serve surface
+   (HTTP routes, optionally MCP).
 4. A separate agent later calls `get_recipe("example", "export report as CSV")` and receives
    a verified, parameterized, replayable step list — and succeeds on the first try.
 
@@ -188,6 +205,13 @@ in Appendix A.)
 All agents are stateless workers coordinating **only** through the Knowledge Store — no
 hidden side channels. This keeps the system auditable and lets any agent's work be
 independently re-derived from stored observations.
+
+> **Packaging note.** These are *roles*, not separately-deployed services. They
+> ship inside **one AgentBox container** and are billed as one hireable agent. For
+> v1 the discovery roles run as a single reasoning loop plus deterministic tooling,
+> with only the **Verifier** kept as an independent, fresh-context stage — the
+> grounding seam (§9). Parallel Scouts/Probers are a P3 scale-out, invisible to
+> callers. See [ARCHITECTURE.md](./ARCHITECTURE.md) §3 and §7.
 
 ---
 
@@ -301,7 +325,9 @@ hallucination rate (target 0) — see §13.
 
 ## 11. Output Interface (MCP / API)
 
-A **Knowledge MCP server** exposed to downstream agents. Verbs:
+A **knowledge query interface** — the *serve* surface of the AgentBox container,
+exposed as HTTP routes (and optionally an MCP server for agent runtimes that prefer
+it). Verbs / routes:
 
 | Verb | Purpose |
 |---|---|
@@ -329,8 +355,14 @@ descriptors), so any agent runtime can execute them.
   CSS/XPath fallback; store ranked alternatives for resilience.
 - **Knowledge Store:** a persistent store for the graph + catalog + provenance + artifacts
   (concrete DB choice deferred to the implementation plan).
-- **Agent runtime:** LLM agents (Claude) for perception/decision; deterministic tooling for
+- **Agent runtime:** LLM agents for perception/decision; deterministic tooling for
   crawl bookkeeping, signature hashing, diffing, and replay assertions.
+- **Inference:** GMI MaaS (OpenAI-compatible, 200+ models; `GMI_MAAS_BASE_URL` /
+  `GMI_MAAS_API_KEY` / `GMI_MODELS` injected by AgentBox). Model tiering — cheaper for
+  scouting, stronger for synthesis/verification — is a config choice.
+- **Packaging / deployment:** one Docker image listed on GMI Cloud AgentBox (HTTP on
+  port 8080; Playwright + Chromium bundled; Redis + an S3-compatible store hold durable
+  state and provenance, since the container is stateless). See ARCHITECTURE.md §7.
 
 ---
 
@@ -357,8 +389,9 @@ Even with "any web platform" as the end target, the loop is validated progressiv
   UI Graph + element catalog, no mutations. Validates state dedup, signatures, selectors.
 - **P1 — Learn (grounded loop).** Add Prober + Workflow Synthesizer + **Verifier** + HITL +
   sandbox actions on the pilot. Validates the anti-hallucination guarantee end-to-end.
-- **P2 — Serve.** Documenter + Publisher + MCP interface + provenance/confidence/freshness.
-  A downstream agent successfully executes a served recipe.
+- **P2 — Serve & ship.** Documenter + Publisher + the AgentBox listing's serve routes
+  (+ optional MCP) + provenance/confidence/freshness, packaged as the single container.
+  A downstream agent successfully executes a served recipe pulled from the listing.
 - **P3 — Generalize & scale.** Hierarchical decomposition + parallel Scouts, robustness
   across diverse platforms, drift detection, and re-learning. Reach the "any platform" goal.
 
