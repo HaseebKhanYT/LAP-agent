@@ -116,6 +116,9 @@ export interface CreateRunInput {
   base_url: string;
   allowlist?: string[];
   max_steps?: number;
+  /** Optional sandbox credentials for platforms that gate behind a login. */
+  username?: string;
+  password?: string;
 }
 
 export type ApprovalDecision = "approve" | "deny" | "skip";
