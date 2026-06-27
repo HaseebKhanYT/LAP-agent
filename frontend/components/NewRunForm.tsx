@@ -13,6 +13,8 @@ export function NewRunForm() {
   const router = useRouter();
   const [platformName, setPlatformName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [allowlist, setAllowlist] = useState("");
   const [maxSteps, setMaxSteps] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -44,6 +46,8 @@ export function NewRunForm() {
       base_url: baseUrl.trim(),
       ...(allowlistArr.length ? { allowlist: allowlistArr } : {}),
       ...(maxStepsNum !== undefined ? { max_steps: maxStepsNum } : {}),
+      ...(username.trim() ? { username: username.trim() } : {}),
+      ...(password ? { password } : {}),
     });
     setSubmitting(false);
 
@@ -55,6 +59,8 @@ export function NewRunForm() {
     // Reset and go to the new run.
     setPlatformName("");
     setBaseUrl("");
+    setUsername("");
+    setPassword("");
     setAllowlist("");
     setMaxSteps("");
     router.push(`/runs/${res.data.id}`);
@@ -79,6 +85,32 @@ export function NewRunForm() {
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="https://app.example.com"
+            className={inputClass}
+          />
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field
+          label="Username"
+          hint="Optional. Sandbox login for platforms that gate behind auth."
+        >
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="off"
+            placeholder="standard_user"
+            className={inputClass}
+          />
+        </Field>
+        <Field label="Password" hint="Optional. Sent over the API; never logged.">
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="off"
+            placeholder="••••••••"
             className={inputClass}
           />
         </Field>
