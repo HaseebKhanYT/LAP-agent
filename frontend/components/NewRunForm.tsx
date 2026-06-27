@@ -75,7 +75,7 @@ export function NewRunForm() {
             type="text"
             value={platformName}
             onChange={(e) => setPlatformName(e.target.value)}
-            placeholder="Acme Admin"
+            placeholder="saucedemo"
             className={inputClass}
           />
         </Field>
@@ -84,7 +84,7 @@ export function NewRunForm() {
             type="url"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://app.example.com"
+            placeholder="https://www.saucedemo.com/"
             className={inputClass}
           />
         </Field>
@@ -110,7 +110,7 @@ export function NewRunForm() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="off"
-            placeholder="••••••••"
+            placeholder="secret_sauce"
             className={inputClass}
           />
         </Field>
